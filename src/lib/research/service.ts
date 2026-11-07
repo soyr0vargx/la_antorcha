@@ -76,6 +76,7 @@ function normalizeAnalysisError(error: unknown): ResearchServiceError {
   if (error instanceof ResearchServiceError) return error;
 
   const status = getHttpStatus(error);
+  console.error("[research] Gemini provider request failed", { status });
   if (status === 429) {
     return new ResearchServiceError("ANALYSIS_QUOTA_EXHAUSTED", "Se agotó la cuota de análisis disponible.");
   }

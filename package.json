@@ -13,7 +13,7 @@
     "@google/genai": "^2.27.0",
     "@tavily/core": "^0.7.14",
     "@types/topojson-client": "^3.1.5",
-    "next": "16.4.3",
+    "next": "16.4.6",
     "openai": "^7.30.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",

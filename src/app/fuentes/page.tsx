@@ -40,6 +40,7 @@ export default function SourcesPage() {
               <article className="archive-record source-record" key={source.id}>
                 <p className="eyebrow">{source.organization}</p>
                 <h3>{source.title}</h3>
+                <p>Publicación: {source.publicationDate ?? "fecha no indicada"}</p>
                 <p>{source.supports}</p>
                 <a href={source.url} rel="noreferrer" target="_blank">Abrir fuente ↗</a>
                 <p>Consulta: {source.consultedAt}</p>

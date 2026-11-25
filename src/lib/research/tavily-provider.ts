@@ -16,8 +16,8 @@ import {
 
 export const MAX_SEARCH_RESULTS = 10;
 export const MAX_TAVILY_QUERY_CHARS = 1_500;
-export const MAX_SOURCE_EXCERPT_CHARS = 1_500;
-export const TAVILY_SEARCH_TIMEOUT_MS = 8_000;
+export const MAX_SOURCE_EXCERPT_CHARS = 4_000;
+export const TAVILY_SEARCH_TIMEOUT_MS = 15_000;
 export const MAX_PROVIDER_DOCUMENTS = MAX_SEARCH_RESULTS;
 
 export type TavilySearchClient = Pick<TavilyClient, "search">;
@@ -28,6 +28,10 @@ type TavilyProviderOptions = {
   now?: () => Date;
   searchTimeoutMs?: number;
   sourcePolicy?: ResearchSourcePolicy;
+  searchDepth?: TavilySearchOptions["searchDepth"];
+  topic?: TavilySearchOptions["topic"];
+  days?: TavilySearchOptions["days"];
+  timeRange?: TavilySearchOptions["timeRange"];
 };
 
 type TavilySourceDiagnostics = {
@@ -39,6 +43,16 @@ type TavilySourceDiagnostics = {
   discardedBySelectionLimit: number;
   discardedDuplicateUrl: number;
 };
+
+function cleanSourceText(value: string): string {
+  return value
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[#*_>|`]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 function originalPublishedDate(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
@@ -68,8 +82,11 @@ function toResearchDocuments(
   const documents = results.flatMap((result) => {
     const sourceKind = classifySource(result.url, sourcePolicy);
     const title = typeof result.title === "string" ? result.title.trim() : "";
-    const excerpt = typeof result.content === "string"
-      ? result.content.trim().slice(0, MAX_SOURCE_EXCERPT_CHARS)
+    const sourceContent = typeof result.rawContent === "string" && result.rawContent.trim()
+      ? result.rawContent
+      : result.content;
+    const excerpt = typeof sourceContent === "string"
+      ? cleanSourceText(sourceContent).slice(0, MAX_SOURCE_EXCERPT_CHARS)
       : "";
 
     if (!sourceKind) {
@@ -140,13 +157,15 @@ export function createTavilyResearchSourceProvider(
   const sourcePolicy = options.sourcePolicy ?? DEFAULT_SOURCE_POLICY;
   const now = options.now ?? (() => new Date());
   const searchOptions: TavilySearchOptions = {
-    searchDepth: "basic",
+    searchDepth: options.searchDepth ?? "basic",
     maxResults: MAX_SEARCH_RESULTS,
-    topic: "general",
+    topic: options.topic ?? "general",
+    ...(options.days === undefined ? {} : { days: options.days }),
+    ...(options.timeRange === undefined ? {} : { timeRange: options.timeRange }),
     includeDomains: preferredSourceDomains(sourcePolicy),
     includeDomainsMode: "prefer",
     includePublishedDate: true,
-    includeRawContent: false,
+    includeRawContent: "markdown",
     includeUsage: true,
     language: "es",
     timeout: searchTimeoutMs,

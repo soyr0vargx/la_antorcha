@@ -14,8 +14,8 @@ export default function ConflictsPage() {
           <p className="eyebrow">ATLAS / ARCHIVO VERIFICADO</p>
           <h2 id="conflict-map-title">Explorar por región</h2>
           <p>
-            El explorador está preparado para fichas con ubicación, cronología, impactos y fuentes.
-            No muestra marcadores hasta que haya información verificada.
+            Selecciona un país en el mapa o busca una ficha por nombre y región. Solo se publicarán
+            marcadores y dossiers cuando la información tenga fuentes verificables.
           </p>
         </div>
         <ConflictExplorer conflicts={verifiedConflicts} />

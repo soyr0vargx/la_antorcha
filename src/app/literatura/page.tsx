@@ -35,7 +35,12 @@ export default function LiteraturePage() {
               <article className="archive-record" key={work.id}>
                 <p className="eyebrow">{work.workType}</p>
                 <h3>{work.title}</h3>
-                <p>{work.author} · {work.historicalContext}</p>
+                <p>{work.author} · {work.publicationDate} · {work.historicalContext}</p>
+                {work.sources.map((source) => (
+                  <a href={source.url} key={source.id} rel="noreferrer" target="_blank">
+                    {source.organization}: {source.title} ↗
+                  </a>
+                ))}
               </article>
             ))}
           </div>

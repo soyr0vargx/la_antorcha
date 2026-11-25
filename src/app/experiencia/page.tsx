@@ -1,5 +1,5 @@
 import { EditorialSectionPage } from "../../components/editorial-section-page";
-import { experienceThemes } from "../../lib/experience";
+import { experienceEvidence, experienceThemes } from "../../lib/experience";
 
 export default function ExperiencePage() {
   return (
@@ -26,6 +26,23 @@ export default function ExperiencePage() {
             </li>
           ))}
         </ol>
+      </section>
+      <section className="section-block" aria-labelledby="experience-evidence-title">
+        <div className="section-block-heading">
+          <p className="eyebrow">LO QUE DICEN LAS FUENTES</p>
+          <h2 id="experience-evidence-title">Datos verificables para cada ámbito.</h2>
+        </div>
+        <div className="archive-record-list">
+          {experienceEvidence.map((item) => (
+            <article className="archive-record source-record" key={item.themeId}>
+              <p className="eyebrow">{item.label}</p>
+              <h3>{item.fact}</h3>
+              <a href={item.source.url} rel="noreferrer" target="_blank">
+                {item.source.organization}: {item.source.title} ↗
+              </a>
+            </article>
+          ))}
+        </div>
       </section>
       <aside className="ethics-note" aria-labelledby="experience-ethics-title">
         <p className="eyebrow">CRITERIO DE DISEÑO</p>

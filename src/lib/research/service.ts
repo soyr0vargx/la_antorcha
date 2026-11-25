@@ -12,9 +12,9 @@ import { withResearchTimeout } from "./timeout";
 
 export const MAX_RESEARCH_QUERY_CHARS = 1_200;
 export const MAX_RESEARCH_DOCUMENTS = 10;
-export const MAX_TOTAL_EVIDENCE_CHARS = 16_000;
-export const SEARCH_TIMEOUT_MS = 9_000;
-export const ANALYSIS_TIMEOUT_MS = 40_000;
+export const MAX_TOTAL_EVIDENCE_CHARS = 20_000;
+export const SEARCH_TIMEOUT_MS = 14_000;
+export const ANALYSIS_TIMEOUT_MS = 44_000;
 
 export type ResearchServiceOptions = {
   sourceProvider: ResearchSourceProvider;
@@ -43,8 +43,10 @@ function normalizeDocuments(
   let remainingChars = MAX_TOTAL_EVIDENCE_CHARS;
 
   return trusted.flatMap((document, index) => {
-    if (remainingChars <= 0) return [];
-    const excerpt = document.excerpt.slice(0, remainingChars);
+    const documentsRemaining = trusted.length - index;
+    if (remainingChars <= 0 || documentsRemaining <= 0) return [];
+    const excerptLimit = Math.ceil(remainingChars / documentsRemaining);
+    const excerpt = document.excerpt.slice(0, excerptLimit);
     remainingChars -= excerpt.length;
     if (!excerpt.trim()) return [];
     return [{ ...document, id: `S${index + 1}`, excerpt }];
@@ -82,6 +84,24 @@ function normalizeAnalysisError(error: unknown): ResearchServiceError {
   }
   if (status === 401 || status === 403) {
     return new ResearchServiceError("ANALYSIS_AUTH_FAILED", "El analizador no está autorizado.");
+  }
+  if (status === 503) {
+    return new ResearchServiceError(
+      "ANALYSIS_UNAVAILABLE",
+      "Gemini está temporalmente ocupado. Inténtalo de nuevo en unos minutos.",
+    );
+  }
+  if (status === 404) {
+    return new ResearchServiceError(
+      "ANALYSIS_UNAVAILABLE",
+      "Los modelos Gemini configurados no están disponibles. Se intentaron las alternativas disponibles.",
+    );
+  }
+  if (status === 400) {
+    return new ResearchServiceError(
+      "ANALYSIS_UNAVAILABLE",
+      "Gemini rechazó el formato de análisis solicitado. Se intentaron las alternativas disponibles.",
+    );
   }
   return new ResearchServiceError("ANALYSIS_UNAVAILABLE", "El analizador no está disponible.");
 }
@@ -121,7 +141,17 @@ export function createResearchService(options: ResearchServiceOptions) {
           "ANALYSIS_TIMEOUT",
         );
       } catch (error) {
-        throw normalizeAnalysisError(error);
+        const analysisError = normalizeAnalysisError(error);
+        throw new ResearchServiceError(
+          analysisError.code,
+          analysisError.message,
+          {
+            cause: analysisError,
+            retryAfterSeconds: analysisError.retryAfterSeconds,
+            evidenceSources: documents,
+            quotaResetAt: analysisError.quotaResetAt,
+          },
+        );
       }
 
       const report = validateResearchReport(draft, documents);

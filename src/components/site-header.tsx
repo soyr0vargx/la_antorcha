@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { siteNavigation } from "../lib/site-sections";
-import { ThemeToggle } from "./site-interactions";
+import { DisplayPreferences } from "./display-preferences";
 
 function NavigationLinks() {
   return siteNavigation.map(({ label, href }) => (
@@ -14,12 +14,12 @@ export function SiteHeader() {
   return (
     <header className="site-header">
       <div className="site-header-inner">
-        <Link className="brand" href="/" aria-label="Voces Jóvenes contra la Guerra, inicio">
+        <Link className="brand" href="/" aria-label="La Antorcha contra la Guerra, inicio">
           <span className="brand-mark" aria-hidden="true">
-            VJ
+            LA
           </span>
           <span className="brand-name">
-            VOCES JÓVENES
+            LA ANTORCHA
             <span>CONTRA LA GUERRA</span>
           </span>
         </Link>
@@ -28,7 +28,7 @@ export function SiteHeader() {
           <NavigationLinks />
         </nav>
 
-        <ThemeToggle />
+        <DisplayPreferences />
 
         <details className="mobile-nav">
           <summary>

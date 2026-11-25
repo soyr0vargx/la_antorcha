@@ -4,8 +4,19 @@ import { createResearchService } from "../../../lib/research/service";
 import { createTavilyResearchSourceProvider } from "../../../lib/research/tavily-provider";
 import { createGeminiResearchAnalyzer } from "../../../lib/research/gemini-analyzer";
 import { ResearchServiceError } from "../../../lib/research/errors";
+import { formatTavilyReport, tavilyAnswer } from "../../../lib/research/tavily-answer";
 
 export const maxDuration = 60;
+
+function formatSourceDate(value: string | null): string {
+  if (!value) return "fecha no indicada";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return value;
+  return new Intl.DateTimeFormat("es", {
+    dateStyle: "medium",
+    timeZone: "UTC",
+  }).format(date);
+}
 
 function formatClaim(claim: {
   text: string;
@@ -37,10 +48,16 @@ function formatReport(report: Awaited<
 
   const sourceList = sources
     .map(
-      (source) =>
-        `- [${source.id}] ${source.organization}. [${source.title}](${source.url})` +
-        `${source.publishedAt ? ` — Publicación: ${source.publishedAt}` : ""}` +
-        ` — Consultada: ${source.retrievedAt}`,
+      (source) => {
+        const translatedUrl = new URL("https://translate.google.com/translate");
+        translatedUrl.searchParams.set("sl", "auto");
+        translatedUrl.searchParams.set("tl", "es");
+        translatedUrl.searchParams.set("u", source.url);
+
+        return `- [${source.id}] ${source.organization}. [Título original: ${source.title}](${source.url})` +
+        `\n  - [Abrir traducción automática al español](${translatedUrl.toString()})` +
+        `\n  - Publicación: ${formatSourceDate(source.publishedAt)}; consultada: ${formatSourceDate(source.retrievedAt)}.`;
+      },
     )
     .join("\n");
 
@@ -73,8 +90,9 @@ function getErrorStatus(error: ResearchServiceError): number {
   if (code.includes("TIMEOUT")) return 504;
   if (
     code.includes("AUTH_FAILED") ||
-    code === "TAVILY_NOT_CONFIGURED"
+    code.endsWith("_NOT_CONFIGURED")
   ) return 503;
+  if (code.endsWith("_UNAVAILABLE")) return 503;
 
   return 502;
 }
@@ -105,21 +123,63 @@ export async function POST(request: Request) {
     }
 
     const service = createResearchService({
-      sourceProvider: createTavilyResearchSourceProvider(),
+      sourceProvider: createTavilyResearchSourceProvider({ searchDepth: "basic" }),
       analyzer: createGeminiResearchAnalyzer(),
+      analysisTimeoutMs: 30_000,
     });
 
-    const report = await service.research(query);
+    let report;
+    try {
+      report = await service.research(query);
+    } catch (error) {
+      if (
+        !(error instanceof ResearchServiceError)
+        || error.code === "INVALID_QUERY"
+        || error.code === "QUERY_TOO_LONG"
+      ) throw error;
+
+      console.warn("[research] Gemini unavailable; using Tavily answer", { code: error.code });
+      try {
+        const fallback = await tavilyAnswer(query.trim());
+        return NextResponse.json({
+          result: formatTavilyReport(query.trim(), fallback),
+          answer: [{ text: fallback.answer || "Revisa las fuentes encontradas.", sourceIds: fallback.documents.map(({ id }) => id) }],
+          sources: fallback.documents.map(({ id, organization, title, url, publishedAt, retrievedAt }) => ({
+            id, organization, title, url, publishedAt, retrievedAt,
+          })),
+          fallback: "tavily",
+        });
+      } catch (fallbackError) {
+        console.error("[research] Tavily answer fallback failed", {
+          detail: fallbackError instanceof Error ? fallbackError.message.slice(0, 160) : String(fallbackError),
+        });
+        throw error;
+      }
+    }
 
     return NextResponse.json({
       result: formatReport(report),
+      answer: report.draft.summary,
+      sources: report.sources,
     });
   } catch (error) {
     if (error instanceof ResearchServiceError) {
       console.error("Error de investigación:", error.code);
 
       return NextResponse.json(
-        { error: error.message },
+        {
+          error: error.message,
+          quotaResetAt: error.quotaResetAt,
+          evidence: error.evidenceSources?.map((source) => ({
+            id: source.id,
+            organization: source.organization,
+            title: source.title,
+            url: source.url,
+            publishedAt: source.publishedAt,
+            retrievedAt: source.retrievedAt,
+            excerpt: source.excerpt,
+          })),
+        },
         { status: getErrorStatus(error) },
       );
     }

@@ -1,10 +1,23 @@
 "use client";
 
 import { useState, type FormEvent, type ReactNode } from "react";
+import { AiLimitNotice } from "./ai-limit-notice";
 
 type ApiResponse = {
   result?: string;
   error?: string;
+  quotaResetAt?: string | null;
+  evidence?: EvidenceSource[];
+};
+
+type EvidenceSource = {
+  id: string;
+  organization: string;
+  title: string;
+  url: string;
+  publishedAt: string | null;
+  retrievedAt: string;
+  excerpt: string;
 };
 
 type ReportSection = {
@@ -38,6 +51,19 @@ function splitReport(markdown: string): ReportSection[] {
       content: markdown.slice(start, end).trim(),
     };
   });
+}
+
+function isEvidenceSource(value: unknown): value is EvidenceSource {
+  if (typeof value !== "object" || value === null) return false;
+  const source = value as Record<string, unknown>;
+  return typeof source.id === "string"
+    && typeof source.organization === "string"
+    && typeof source.title === "string"
+    && typeof source.url === "string"
+    && (typeof source.publishedAt === "string" || source.publishedAt === null)
+    && typeof source.retrievedAt === "string"
+    && Number.isFinite(Date.parse(source.retrievedAt))
+    && typeof source.excerpt === "string";
 }
 
 function renderInline(markdown: string): ReactNode[] {
@@ -78,6 +104,40 @@ function renderInline(markdown: string): ReactNode[] {
 
     return token;
   });
+}
+
+function translatedSourceUrl(url: string): string {
+  const translatedUrl = new URL("https://translate.google.com/translate");
+  translatedUrl.searchParams.set("sl", "auto");
+  translatedUrl.searchParams.set("tl", "es");
+  translatedUrl.searchParams.set("u", url);
+  return translatedUrl.toString();
+}
+
+function formatSourceDate(value: string | null): string {
+  if (!value) return "fecha no indicada";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return value;
+  return new Intl.DateTimeFormat("es", {
+    dateStyle: "medium",
+    timeZone: "UTC",
+  }).format(date);
+}
+
+function spanishSectionTitle(title: string): string {
+  const normalized = title.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+  const translations: Record<string, string> = {
+    "HISTORICAL CONTEXT": "Contexto histórico",
+    "RECENT EVENTS": "Cronología y acontecimientos recientes",
+    "HUMANITARIAN IMPACT": "Impacto humanitario",
+    "IMPACT ON CHILDREN AND ADOLESCENTS": "Impacto en niños y adolescentes",
+    "INTERNATIONAL RESPONSE": "Respuesta internacional y ayuda humanitaria",
+    "INFORMATION REQUIRING VERIFICATION": "Información que requiere verificación",
+    "FIGURES": "Cifras",
+    "DOCUMENTARY CONCLUSIONS": "Conclusiones documentales",
+    "SOURCES": "Fuentes",
+  };
+  return translations[normalized] ?? title;
 }
 
 function MarkdownBlocks({ content }: { content: string }) {
@@ -200,7 +260,7 @@ function ResearchReport({ markdown }: { markdown: string }) {
     <article className="research-report" aria-labelledby="report-title">
       <div className="report-topline">
         <span>INFORME DE INVESTIGACIÓN</span>
-        <span>VOCES JÓVENES / DOSSIER</span>
+        <span>LA ANTORCHA / DOSSIER</span>
       </div>
 
       <header className="report-header">
@@ -219,10 +279,10 @@ function ResearchReport({ markdown }: { markdown: string }) {
 
       <div className="report-sections">
         {articleSections.map((section, index) => (
-          <section className="report-section" key={`${section.title}-${index}`}>
-            <h3>{section.title}</h3>
+          <details className="report-section" key={`${section.title}-${index}`}>
+            <summary>{spanishSectionTitle(section.title)}</summary>
             <MarkdownBlocks content={section.content} />
-          </section>
+          </details>
         ))}
       </div>
     </article>
@@ -233,7 +293,9 @@ export function ResearchWorkbench({ initialQuery = "" }: { initialQuery?: string
   const [query, setQuery] = useState(initialQuery);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [evidence, setEvidence] = useState<EvidenceSource[]>([]);
   const [pending, setPending] = useState(false);
+  const [quotaResetAt, setQuotaResetAt] = useState<string | null>(null);
 
   async function submitResearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -243,6 +305,8 @@ export function ResearchWorkbench({ initialQuery = "" }: { initialQuery?: string
     setPending(true);
     setError(null);
     setResult(null);
+    setEvidence([]);
+    setQuotaResetAt(null);
 
     try {
       const response = await fetch("/api/research", {
@@ -253,6 +317,12 @@ export function ResearchWorkbench({ initialQuery = "" }: { initialQuery?: string
       const payload = (await response.json()) as ApiResponse;
 
       if (!response.ok) {
+        setQuotaResetAt(typeof payload.quotaResetAt === "string" ? payload.quotaResetAt : null);
+        setEvidence(
+          Array.isArray(payload.evidence) && payload.evidence.every(isEvidenceSource)
+            ? payload.evidence
+            : [],
+        );
         throw new Error(payload.error || `No se pudo completar la solicitud (${response.status}).`);
       }
 
@@ -261,6 +331,7 @@ export function ResearchWorkbench({ initialQuery = "" }: { initialQuery?: string
       }
 
       setResult(payload.result);
+      setEvidence([]);
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
@@ -278,8 +349,10 @@ export function ResearchWorkbench({ initialQuery = "" }: { initialQuery?: string
   }
 
   function resetResearch() {
+    setQuotaResetAt(null);
     setResult(null);
     setError(null);
+    setEvidence([]);
   }
 
   return (
@@ -339,7 +412,9 @@ export function ResearchWorkbench({ initialQuery = "" }: { initialQuery?: string
         </div>
       )}
 
-      {error && (
+      {error && quotaResetAt && <AiLimitNotice message={error} resetAt={quotaResetAt} />}
+
+      {error && !quotaResetAt && (
         <div className="research-error" role="alert">
           <div>
             <p className="eyebrow">NO SE PUDO COMPLETAR</p>
@@ -347,6 +422,38 @@ export function ResearchWorkbench({ initialQuery = "" }: { initialQuery?: string
           </div>
           <button type="button" onClick={resetResearch}>Volver a intentarlo</button>
         </div>
+      )}
+
+      {evidence.length > 0 && (
+        <section className="research-evidence" aria-labelledby="research-evidence-title">
+          <p className="eyebrow">FUENTES RECUPERADAS · SIN ANÁLISIS DE IA</p>
+          <h3 id="research-evidence-title">
+            La investigación automática no terminó, pero estas fuentes verificadas están disponibles.
+          </h3>
+          <p className="research-evidence-note">
+            Estas son fuentes originales, todavía sin analizar. Si una está en inglés, puedes abrir su traducción automática.
+          </p>
+          <div className="research-evidence-list">
+            {evidence.map((source) => (
+              <article className="research-evidence-card" key={source.id}>
+                <p className="eyebrow">{source.id} · {source.organization}</p>
+                <h4><a href={source.url} rel="noreferrer" target="_blank">{source.title}</a></h4>
+                <p className="research-source-language">
+                  Título original ·{" "}
+                  <a href={translatedSourceUrl(source.url)} rel="noreferrer" target="_blank">
+                    Abrir traducción automática al español
+                  </a>
+                </p>
+                <p className="research-excerpt-label">Extracto original de la fuente:</p>
+                <p>{source.excerpt}</p>
+                <span>
+                  Publicación: {formatSourceDate(source.publishedAt)} ·
+                  {" "}Consulta: {formatSourceDate(source.retrievedAt)}
+                </span>
+              </article>
+            ))}
+          </div>
+        </section>
       )}
 
       {result && (

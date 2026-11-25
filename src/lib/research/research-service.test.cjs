@@ -20,12 +20,14 @@ require.extensions[".ts"] = (module, filename) => {
 };
 
 const { TavilyKeylessLimitError } = require("@tavily/core");
-const { createGeminiResearchAnalyzer, GEMINI_MAX_OUTPUT_TOKENS, GEMINI_RESEARCH_MODEL, MAX_GEMINI_OUTPUT_CHARS } = require("./gemini-analyzer.ts");
+const { FinishReason } = require("@google/genai");
+const { createGeminiResearchAnalyzer, GEMINI_EXTRA_RESEARCH_MODELS, GEMINI_FALLBACK_RESEARCH_MODEL, GEMINI_MAX_OUTPUT_TOKENS, GEMINI_MAX_REFERENCES_PER_CLAIM, GEMINI_RESEARCH_MODEL, MAX_GEMINI_OUTPUT_CHARS } = require("./gemini-analyzer.ts");
 const { ResearchServiceError } = require("./errors.ts");
 const { validateResearchReport } = require("./report-validation.ts");
 const { createResearchService, MAX_RESEARCH_DOCUMENTS, MAX_RESEARCH_QUERY_CHARS, MAX_TOTAL_EVIDENCE_CHARS } = require("./service.ts");
 const { classifySource } = require("./source-policy.ts");
 const { createTavilyResearchSourceProvider, MAX_PROVIDER_DOCUMENTS, MAX_SOURCE_EXCERPT_CHARS } = require("./tavily-provider.ts");
+const { verifiedConflicts } = require("../conflicts.ts");
 
 const source = (overrides = {}) => ({
   id: "S1",
@@ -43,14 +45,14 @@ const source = (overrides = {}) => ({
 const validDraft = (overrides = {}) => ({
   title: "Informe de prueba",
   summary: [{ text: "El informe documenta 12,000 niños afectados.", sourceIds: ["S1"] }],
-  historicalContext: [],
+  historicalContext: [{ text: "El informe documenta 12,000 niños afectados por el desplazamiento.", sourceIds: ["S1"] }],
   recentEvents: [{ date: null, text: "La fuente no aporta una fecha del acontecimiento.", sourceIds: ["S1"] }],
   figures: [{ text: "12,000 niños", sourceIds: ["S1"] }],
-  humanitarianImpact: [],
-  childAndAdolescentImpact: [],
-  internationalResponse: [],
-  uncertainties: [],
-  documentaryConclusions: [],
+  humanitarianImpact: [{ text: "El informe documenta 12,000 niños afectados por el desplazamiento.", sourceIds: ["S1"] }],
+  childAndAdolescentImpact: [{ text: "El informe documenta 12,000 niños afectados por el desplazamiento.", sourceIds: ["S1"] }],
+  internationalResponse: [{ text: "El informe documenta 12,000 niños afectados por el desplazamiento.", sourceIds: ["S1"] }],
+  uncertainties: [{ text: "El informe documenta 12,000 niños afectados por el desplazamiento.", sourceIds: ["S1"] }],
+  documentaryConclusions: [{ text: "El informe documenta 12,000 niños afectados por el desplazamiento.", sourceIds: ["S1"] }],
   ...overrides,
 });
 
@@ -89,6 +91,22 @@ test("source policy prioritizes primary organizations and allows recognized jour
     }),
     "primary",
   );
+});
+
+test("each published conflict dossier contains sourced detail and a dated chronology", () => {
+  assert.deepEqual(
+    verifiedConflicts.map(({ id }) => id),
+    ["sudan-2026", "ukraine-2026", "gaza-2026"],
+  );
+  for (const conflict of verifiedConflicts) {
+    assert.ok(conflict.context.length > 100, conflict.id);
+    assert.ok(conflict.currentSituation.length > 100, conflict.id);
+    assert.ok(conflict.humanitarianImpact.length > 100, conflict.id);
+    assert.ok(conflict.impactOnChildren.length > 100, conflict.id);
+    assert.ok(conflict.chronology.length > 0, conflict.id);
+    assert.ok(conflict.sources.length > 0, conflict.id);
+    assert.equal(conflict.reviewedAt, "2026-11-12");
+  }
 });
 
 test("Tavily adapter makes one basic call, caps results, prefers trusted domains, and preserves metadata", async () => {
@@ -141,12 +159,115 @@ test("Tavily adapter makes one basic call, caps results, prefers trusted domains
   assert.ok(documents.every(({ url }) => !url.includes("unknown.example")));
 });
 
+test("Tavily adapter supports advanced searches and bounded recent searches", async () => {
+  let capturedOptions;
+  const provider = createTavilyResearchSourceProvider({
+    searchDepth: "advanced",
+    timeRange: "month",
+    client: {
+      async search(query, options) {
+        capturedOptions = options;
+        return {
+          results: [],
+          query,
+          responseTime: 0.1,
+          images: [],
+          requestId: "mock-recent-news",
+        };
+      },
+    },
+  });
+
+  await provider.search("noticias recientes");
+
+  assert.equal(capturedOptions.searchDepth, "advanced");
+  assert.equal(capturedOptions.timeRange, "month");
+});
+
+test("Tavily adapter supports advanced search depth", async () => {
+  let capturedOptions;
+  const provider = createTavilyResearchSourceProvider({
+    searchDepth: "advanced",
+    client: {
+      async search(query, options) {
+        capturedOptions = options;
+        return {
+          results: [],
+          query,
+          responseTime: 0.1,
+          images: [],
+          requestId: "mock-advanced-search",
+        };
+      },
+    },
+  });
+
+  await provider.search("contexto del conflicto");
+
+  assert.equal(capturedOptions.searchDepth, "advanced");
+});
+
 test("research evidence budgets align with the ten-source provider cap", () => {
   assert.equal(MAX_PROVIDER_DOCUMENTS, 10);
   assert.equal(MAX_RESEARCH_DOCUMENTS, MAX_PROVIDER_DOCUMENTS);
-  assert.ok(MAX_TOTAL_EVIDENCE_CHARS >= MAX_RESEARCH_DOCUMENTS * MAX_SOURCE_EXCERPT_CHARS);
-  assert.equal(GEMINI_MAX_OUTPUT_TOKENS, 6_144);
-  assert.equal(MAX_GEMINI_OUTPUT_CHARS, 24_000);
+  assert.ok(MAX_TOTAL_EVIDENCE_CHARS <= MAX_RESEARCH_DOCUMENTS * MAX_SOURCE_EXCERPT_CHARS);
+  assert.equal(MAX_SOURCE_EXCERPT_CHARS, 4_000);
+  assert.equal(MAX_TOTAL_EVIDENCE_CHARS, 20_000);
+  assert.equal(GEMINI_MAX_OUTPUT_TOKENS, 4_096);
+  assert.equal(MAX_GEMINI_OUTPUT_CHARS, 64_000);
+});
+
+test("Tavily raw page content takes priority over short search snippets", async () => {
+  let capturedOptions;
+  const provider = createTavilyResearchSourceProvider({
+    client: {
+      async search(query, options) {
+        capturedOptions = options;
+        return {
+          results: [{
+            title: "Humanitarian report",
+            url: "https://www.unicef.org/reports/example",
+            content: "Short search snippet.",
+            rawContent: "Full page evidence with details about children and schools.",
+            score: 0.9,
+          }],
+          query,
+          responseTime: 0.1,
+          images: [],
+          requestId: "mock-raw-content",
+        };
+      },
+    },
+  });
+
+  const [document] = await provider.search("children and schools");
+
+  assert.equal(capturedOptions.includeRawContent, "markdown");
+  assert.equal(document.excerpt, "Full page evidence with details about children and schools.");
+});
+
+test("research evidence is distributed across all accepted sources", async () => {
+  const documents = Array.from({ length: 10 }, (_, index) =>
+    source({
+      id: `S${index + 1}`,
+      title: `Report ${index + 1}`,
+      url: `https://www.un.org/reports/${index + 1}`,
+      excerpt: `${source().excerpt}${" Evidence ".repeat(600)}`,
+    }),
+  );
+  let analyzedDocuments;
+  const { researchService } = serviceWith({
+    documents,
+    analyze: async (_query, evidence) => {
+      analyzedDocuments = evidence;
+      return validDraft();
+    },
+  });
+
+  await researchService.research("conflict evidence");
+
+  assert.equal(analyzedDocuments.length, 10);
+  assert.ok(analyzedDocuments.every(({ excerpt }) => excerpt.length === 2_000));
 });
 
 test("Tavily diagnostics log only aggregate rejection counts", async () => {
@@ -315,7 +436,7 @@ test("the service passes up to ten trusted sources and logs aggregate citation c
         id: `old-${index + 1}`,
         title: `Informe ${index + 1}`,
         url: `https://www.un.org/reports/${index + 1}`,
-        excerpt: `Evidence document ${index + 1}.`,
+        excerpt: `${source().excerpt} Evidence document ${index + 1}.`,
       }),
     );
     let analyzedDocuments;
@@ -394,6 +515,23 @@ test("dates and figures unsupported by cited source text are rejected", () => {
   );
 });
 
+test("incomplete narrative sections are rejected instead of rendered as empty", () => {
+  assert.throws(
+    () => validateResearchReport(
+      validDraft({ childAndAdolescentImpact: [] }),
+      [source()],
+    ),
+    { code: "INCOMPLETE_REPORT" },
+  );
+  assert.throws(
+    () => validateResearchReport(
+      validDraft({ recentEvents: [] }),
+      [source()],
+    ),
+    { code: "INCOMPLETE_REPORT" },
+  );
+});
+
 test("new report sections require valid citations and retain cited sources", () => {
   const report = validateResearchReport(
     validDraft({
@@ -463,7 +601,12 @@ test("search authentication and provider HTTP failures are classified without re
 });
 
 test("Gemini quota and HTTP failures are classified without retries", async () => {
-  for (const [status, expectedCode] of [[429, "ANALYSIS_QUOTA_EXHAUSTED"], [503, "ANALYSIS_UNAVAILABLE"]]) {
+  for (const [status, expectedCode] of [
+    [400, "ANALYSIS_UNAVAILABLE"],
+    [404, "ANALYSIS_UNAVAILABLE"],
+    [429, "ANALYSIS_QUOTA_EXHAUSTED"],
+    [503, "ANALYSIS_UNAVAILABLE"],
+  ]) {
     let attempts = 0;
     const { researchService } = serviceWith({
       analyze: async () => {
@@ -475,6 +618,23 @@ test("Gemini quota and HTTP failures are classified without retries", async () =
     await assert.rejects(researchService.research("conflicto actual"), { code: expectedCode });
     assert.equal(attempts, 1);
   }
+});
+
+test("analysis failures retain trusted evidence for the research page", async () => {
+  const { researchService } = serviceWith({
+    documents: [source()],
+    analyze: async () => {
+      throw { status: 503 };
+    },
+  });
+
+  await assert.rejects(researchService.research("impacto humanitario"), (error) => {
+    assert.equal(error.code, "ANALYSIS_UNAVAILABLE");
+    assert.equal(error.evidenceSources.length, 1);
+    assert.equal(error.evidenceSources[0].id, "S1");
+    assert.equal(error.evidenceSources[0].excerpt, source().excerpt);
+    return true;
+  });
 });
 
 test("search and analysis timeouts are explicit and do not trigger retries", async () => {
@@ -509,13 +669,23 @@ test("Gemini receives recovered evidence and a citation-id-only schema without r
   await analyzer.analyze("desplazamiento infantil", [source()]);
 
   assert.equal(request.model, GEMINI_RESEARCH_MODEL);
+  assert.equal(GEMINI_RESEARCH_MODEL, "gemini-3.6-flash");
+  assert.equal(GEMINI_FALLBACK_RESEARCH_MODEL, "gemini-3-flash-preview");
   assert.match(request.contents, /El informe documenta 12,000 niños afectados por el desplazamiento/);
   assert.doesNotMatch(request.contents, /https:\/\/www\.unicef\.org/);
   assert.equal(request.config.responseMimeType, "application/json");
   assert.deepEqual(request.config.tools, undefined);
   assert.ok(JSON.stringify(request.config.responseJsonSchema).includes('"enum":["S1"]'));
-  assert.equal(request.config.responseJsonSchema.properties.internationalResponse.maxItems, 10);
-  assert.equal(request.config.responseJsonSchema.properties.documentaryConclusions.maxItems, 5);
+  assert.equal(
+    request.config.responseJsonSchema.properties.summary.items.properties.sourceIds.maxItems,
+    1,
+  );
+  assert.equal(request.config.responseJsonSchema.properties.internationalResponse.maxItems, 4);
+  assert.equal(request.config.responseJsonSchema.properties.documentaryConclusions.maxItems, 3);
+  assert.equal(request.config.responseJsonSchema.properties.historicalContext.minItems, 1);
+  assert.equal(request.config.responseJsonSchema.properties.recentEvents.minItems, 1);
+  assert.equal(request.config.maxOutputTokens, GEMINI_MAX_OUTPUT_TOKENS);
+  assert.equal(request.config.thinkingConfig.thinkingLevel, "MINIMAL");
 });
 
 test("Gemini receives all ten recovered sources and permits only their citation IDs", async () => {
@@ -540,9 +710,186 @@ test("Gemini receives all ten recovered sources and permits only their citation 
   const allowedCitationIds =
     request.config.responseJsonSchema.properties.summary.items.properties.sourceIds.items.enum;
   assert.deepEqual(allowedCitationIds, documents.map(({ id }) => id));
+  assert.equal(
+    request.config.responseJsonSchema.properties.summary.items.properties.sourceIds.maxItems,
+    GEMINI_MAX_REFERENCES_PER_CLAIM,
+  );
   for (const document of documents) {
     assert.ok(request.contents.includes(document.excerpt));
   }
+});
+
+test("Gemini switches to the verified free fallback on 429 or 503", async () => {
+  for (const status of [429, 503]) {
+  const attemptedModels = [];
+  const analyzer = createGeminiResearchAnalyzer({
+    generateContent: async (parameters) => {
+      attemptedModels.push(parameters.model);
+      if (parameters.model === GEMINI_RESEARCH_MODEL) throw { status };
+      return { text: JSON.stringify(validDraft()) };
+    },
+  });
+
+  const report = await analyzer.analyze("desplazamiento infantil", [source()]);
+
+  assert.deepEqual(attemptedModels, [
+    GEMINI_RESEARCH_MODEL,
+    GEMINI_FALLBACK_RESEARCH_MODEL,
+  ]);
+  assert.equal(report.summary.length, 1);
+  }
+});
+
+test("Gemini tries alternate models when a configured model is missing or rejects structured output", async () => {
+  for (const status of [400, 404]) {
+    const attemptedModels = [];
+    const analyzer = createGeminiResearchAnalyzer({
+      generateContent: async (parameters) => {
+        attemptedModels.push(parameters.model);
+        if (parameters.model === GEMINI_RESEARCH_MODEL) throw { status };
+        return { text: JSON.stringify(validDraft()) };
+      },
+    });
+
+    await analyzer.analyze("desplazamiento infantil", [source()]);
+
+    assert.deepEqual(attemptedModels, [GEMINI_RESEARCH_MODEL, GEMINI_FALLBACK_RESEARCH_MODEL]);
+  }
+});
+
+test("Gemini does not retry authentication failures with alternate models", async () => {
+  const attemptedModels = [];
+  const analyzer = createGeminiResearchAnalyzer({
+    generateContent: async (parameters) => {
+      attemptedModels.push(parameters.model);
+      throw { status: 403 };
+    },
+  });
+
+  await assert.rejects(analyzer.analyze("desplazamiento infantil", [source()]), { status: 403 });
+  assert.deepEqual(attemptedModels, [GEMINI_RESEARCH_MODEL]);
+});
+
+test("Gemini surfaces the provider failure when all verified models fail", async () => {
+  const attemptedModels = [];
+  const analyzer = createGeminiResearchAnalyzer({
+    generateContent: async (parameters) => {
+      attemptedModels.push(parameters.model);
+      throw { status: 503 };
+    },
+  });
+
+  await assert.rejects(analyzer.analyze("desplazamiento infantil", [source()]), { status: 503 });
+  const allModels = [GEMINI_RESEARCH_MODEL, GEMINI_FALLBACK_RESEARCH_MODEL, ...GEMINI_EXTRA_RESEARCH_MODELS];
+  assert.deepEqual(attemptedModels, [...allModels, ...allModels, ...allModels]);
+});
+
+test("Gemini uses the verified fast fallback after the primary model fails", async () => {
+  const attemptedModels = [];
+  const analyzer = createGeminiResearchAnalyzer({
+    generateContent: async (parameters) => {
+      attemptedModels.push(parameters.model);
+      if (parameters.model !== GEMINI_FALLBACK_RESEARCH_MODEL) throw { status: 503 };
+      return { text: JSON.stringify(validDraft()) };
+    },
+  });
+
+  const report = await analyzer.analyze("desplazamiento infantil", [source()]);
+
+  assert.deepEqual(attemptedModels, [
+    GEMINI_RESEARCH_MODEL,
+    GEMINI_FALLBACK_RESEARCH_MODEL,
+  ]);
+  assert.equal(report.summary.length, 1);
+});
+
+test("Gemini tries another free model when a model request times out", async () => {
+  const attemptedModels = [];
+  const analyzer = createGeminiResearchAnalyzer({
+    generateContent: async (parameters) => {
+      attemptedModels.push(parameters.model);
+      if (parameters.model === GEMINI_RESEARCH_MODEL) {
+        throw new ResearchServiceError("ANALYSIS_TIMEOUT", "Timed out");
+      }
+      return { text: JSON.stringify(validDraft()) };
+    },
+  });
+
+  const report = await analyzer.analyze("desplazamiento infantil", [source()]);
+
+  assert.deepEqual(attemptedModels, [GEMINI_RESEARCH_MODEL, GEMINI_FALLBACK_RESEARCH_MODEL]);
+  assert.equal(report.summary.length, 1);
+});
+
+test("Gemini retries a report rejected by source validation with the alternate model", async () => {
+  const attemptedModels = [];
+  const analyzer = createGeminiResearchAnalyzer({
+    generateContent: async (parameters) => {
+      attemptedModels.push(parameters.model);
+      return {
+        text: JSON.stringify(
+          parameters.model === GEMINI_RESEARCH_MODEL
+            ? validDraft({ figures: [{ text: "99,999 niños", sourceIds: ["S1"] }] })
+            : validDraft(),
+        ),
+      };
+    },
+  });
+
+  const report = await analyzer.analyze("desplazamiento infantil", [source()]);
+
+  assert.deepEqual(attemptedModels, [GEMINI_RESEARCH_MODEL, GEMINI_FALLBACK_RESEARCH_MODEL]);
+  assert.equal(report.figures[0].text, "12,000 niños");
+});
+
+test("Gemini keeps a complete report while omitting unverified numeric claims on retry", async () => {
+  const attemptedModels = [];
+  const draftWithUnsupportedClaims = validDraft({
+    summary: [
+      { text: "99,999 niños fueron desplazados.", sourceIds: ["S1"] },
+      { text: "12,000 niños fueron afectados.", sourceIds: ["S1"] },
+    ],
+    figures: [
+      { text: "99,999 niños desplazados", sourceIds: ["S1"] },
+      { text: "12,000 niños afectados", sourceIds: ["S1"] },
+    ],
+  });
+  const analyzer = createGeminiResearchAnalyzer({
+    generateContent: async (parameters) => {
+      attemptedModels.push(parameters.model);
+      return { text: JSON.stringify(draftWithUnsupportedClaims) };
+    },
+  });
+
+  const report = await analyzer.analyze("desplazamiento infantil", [source()]);
+
+  assert.deepEqual(attemptedModels, [GEMINI_RESEARCH_MODEL, GEMINI_FALLBACK_RESEARCH_MODEL]);
+  assert.deepEqual(report.summary.map(({ text }) => text), ["12,000 niños fueron afectados."]);
+  assert.deepEqual(report.figures.map(({ text }) => text), ["12,000 niños afectados"]);
+});
+
+test("Gemini keeps a report when no recent event date can be verified", async () => {
+  const analyzer = createGeminiResearchAnalyzer({
+    generateContent: async (parameters) => ({
+      text: JSON.stringify(
+        parameters.model === GEMINI_RESEARCH_MODEL
+          ? validDraft({ figures: [{ text: "99,999 niños", sourceIds: ["S1"] }] })
+          : validDraft({
+            recentEvents: [{
+              date: "2026-04-04",
+              text: "Las hostilidades se intensificaron el 4 de abril de 2026.",
+              sourceIds: ["S1"],
+            }],
+          }),
+      ),
+    }),
+  });
+
+  const report = await analyzer.analyze("conflicto", [source()]);
+
+  assert.equal(report.recentEvents.length, 1);
+  assert.equal(report.recentEvents[0].date, null);
+  assert.match(report.recentEvents[0].text, /fechas verificables/);
 });
 
 test("oversized Gemini output is rejected", async () => {
@@ -552,6 +899,125 @@ test("oversized Gemini output is rejected", async () => {
   await assert.rejects(analyzer.analyze("consulta", [source()]), { code: "INVALID_REPORT" });
 });
 
+test("Gemini regenerates once when source validation rejects a generated date or figure", async () => {
+  const requests = [];
+  const drafts = [
+    validDraft({ figures: [{ text: "99,999 children", sourceIds: ["S1"] }] }),
+    validDraft(),
+  ];
+  const analyzer = createGeminiResearchAnalyzer({
+    generateContent: async (parameters) => {
+      requests.push(parameters);
+      return { text: JSON.stringify(drafts.shift()) };
+    },
+  });
+
+  const report = await analyzer.analyze("desplazamiento infantil", [source()]);
+
+  assert.equal(requests.length, 2);
+  assert.match(requests[1].contents, /SEGUNDO INTENTO/);
+  assert.equal(report.figures[0].text, "12,000 niños");
+});
+
+test("Gemini retries once when the first draft omits required sections", async () => {
+  const requests = [];
+  const drafts = [
+    validDraft({ humanitarianImpact: [] }),
+    validDraft(),
+  ];
+  const analyzer = createGeminiResearchAnalyzer({
+    generateContent: async (parameters) => {
+      requests.push(parameters);
+      return { text: JSON.stringify(drafts.shift()) };
+    },
+  });
+
+  const report = await analyzer.analyze("desplazamiento infantil", [source()]);
+
+  assert.equal(requests.length, 2);
+  assert.match(requests[1].contents, /No dejes vacía ninguna sección narrativa obligatoria/);
+  assert.equal(report.humanitarianImpact.length, 1);
+});
+
+test("Gemini retries a truncated response with the alternate model", async () => {
+  let attempts = 0;
+  const analyzer = createGeminiResearchAnalyzer({
+    generateContent: async () => {
+      attempts += 1;
+      return attempts === 1
+        ? {
+          text: "{\"title\":\"incomplete\"",
+          candidates: [{ finishReason: FinishReason.MAX_TOKENS }],
+        }
+        : { text: JSON.stringify(validDraft()) };
+    },
+  });
+
+  const report = await analyzer.analyze("consulta", [source()]);
+
+  assert.equal(attempts, 2);
+  assert.equal(report.title, "Informe de prueba");
+});
+
+test("Gemini reports an explicit error when every response hits the output token limit", async () => {
+  await assert.rejects(
+    createGeminiResearchAnalyzer({
+      generateContent: async () => ({
+        text: "{\"title\":\"incomplete\"",
+        candidates: [{ finishReason: FinishReason.MAX_TOKENS }],
+      }),
+    }).analyze("consulta", [source()]),
+    { code: "ANALYSIS_INCOMPLETE" },
+  );
+});
+
+test("Gemini retries malformed JSON with the alternate model", async () => {
+  let attempts = 0;
+  const analyzer = createGeminiResearchAnalyzer({
+    generateContent: async () => {
+      attempts += 1;
+      return { text: attempts === 1 ? "{\"title\":" : JSON.stringify(validDraft()) };
+    },
+  });
+
+  const report = await analyzer.analyze("consulta", [source()]);
+
+  assert.equal(attempts, 2);
+  assert.equal(report.title, "Informe de prueba");
+});
+
+test("Gemini omits unverifiable figures rather than discarding the whole report", async () => {
+  let attempts = 0;
+  const analyzer = createGeminiResearchAnalyzer({
+    generateContent: async () => {
+      attempts += 1;
+      return {
+        text: JSON.stringify(
+          validDraft({ figures: [{ text: "99,999 children", sourceIds: ["S1"] }] }),
+        ),
+      };
+    },
+  });
+
+  const report = await analyzer.analyze("desplazamiento infantil", [source()]);
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(report.figures, []);
+});
+
 test("Gemini refuses to initialize without a key when no mock generator is supplied", () => {
   assert.throws(() => createGeminiResearchAnalyzer({ apiKey: "" }), ResearchServiceError);
+});
+test("Gemini reports the daily limit with a reset time when every model is out of quota", async () => {
+  const analyzer = createGeminiResearchAnalyzer({
+    generateContent: async () => {
+      throw Object.assign(new Error("GenerateRequestsPerDayPerProjectPerModel-FreeTier"), { status: 429 });
+    },
+  });
+
+  await assert.rejects(analyzer.analyze("desplazamiento infantil", [source()]), (error) => {
+    assert.equal(error.code, "ANALYSIS_QUOTA_EXHAUSTED");
+    assert.ok(Date.parse(error.quotaResetAt) > Date.now());
+    return true;
+  });
 });

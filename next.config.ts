@@ -6,6 +6,7 @@ const nextConfig: NextConfig = {
     agentFeedback: true,
     agentUpgrade: "security",
   },
+  allowedDevOrigins: ["*.preview.emergentagent.com"],
   cacheComponents: true,
   partialPrefetching: true,
   turbopack: {

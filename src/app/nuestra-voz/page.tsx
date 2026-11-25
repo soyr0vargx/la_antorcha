@@ -1,6 +1,6 @@
 import { EditorialSectionPage } from "../../components/editorial-section-page";
 import { ArchiveEmptyState } from "../../components/archive-empty-state";
-import { contributionTypes, publishedStudentContributions } from "../../lib/student-voice";
+import { contributionTypes, publishedStudentContributions, voiceResources } from "../../lib/student-voice";
 
 export default function OurVoicePage() {
   return (
@@ -44,6 +44,22 @@ export default function OurVoicePage() {
           ))}
         </div>
       )}
+      <section className="section-block" aria-labelledby="voice-resources-title">
+        <div className="section-block-heading">
+          <p className="eyebrow">RECURSOS CONFIABLES</p>
+          <h2 id="voice-resources-title">Para hablar de la guerra y participar en la paz.</h2>
+        </div>
+        <div className="archive-record-list">
+          {voiceResources.map((source) => (
+            <article className="archive-record source-record" key={source.id}>
+              <p className="eyebrow">{source.organization}</p>
+              <h3>{source.title}</h3>
+              <p>{source.supports}</p>
+              <a href={source.url} rel="noreferrer" target="_blank">Abrir fuente ↗</a>
+            </article>
+          ))}
+        </div>
+      </section>
     </EditorialSectionPage>
   );
 }

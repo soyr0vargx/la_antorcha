@@ -17,7 +17,7 @@ export function EditorialSectionPage({
     <main className="inner-page" id="contenido">
       <section className="inner-hero">
         <div className="inner-hero-meta">
-          <span>VOCES JÓVENES CONTRA LA GUERRA</span>
+          <span>LA ANTORCHA CONTRA LA GUERRA</span>
           <span>SECCIÓN {index}</span>
         </div>
         <p className="eyebrow">ARCHIVO EDITORIAL</p>

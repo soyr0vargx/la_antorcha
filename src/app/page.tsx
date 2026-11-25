@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { NewsCarousel } from "../components/news-carousel";
 import { ResearchWorkbench } from "../components/research-workbench";
 import { editorialSections } from "../lib/site-sections";
 
@@ -15,7 +16,7 @@ export default function HomePage() {
           <div className="hero-copy">
             <p className="eyebrow">MIRAR MÁS ALLÁ DEL FRENTE</p>
             <h1 id="hero-title">
-              VOCES JÓVENES
+              LA ANTORCHA
               <span>CONTRA LA GUERRA</span>
             </h1>
             <p className="hero-claim">Detrás de cada cifra hay una vida.</p>
@@ -65,6 +66,8 @@ export default function HomePage() {
         </div>
         <ResearchWorkbench />
       </section>
+
+      <NewsCarousel />
 
       <section className="human-section" aria-labelledby="human-title">
         <div className="human-section-head">

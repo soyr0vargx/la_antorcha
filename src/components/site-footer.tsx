@@ -5,7 +5,7 @@ export function SiteFooter() {
     <footer className="site-footer">
       <div className="footer-main">
         <Link className="footer-wordmark" href="/">
-          VOCES JÓVENES
+          LA ANTORCHA
           <span>CONTRA LA GUERRA</span>
         </Link>
         <p>
@@ -17,7 +17,7 @@ export function SiteFooter() {
       </div>
       <div className="footer-meta">
         <span>PLATAFORMA EDITORIAL</span>
-        <span>© 2026 VOCES JÓVENES</span>
+        <span>© 2026 LA ANTORCHA</span>
       </div>
     </footer>
   );

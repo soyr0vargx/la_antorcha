@@ -17,7 +17,7 @@ export default function ResearchPage({ searchParams }: ResearchPageProps) {
     <main className="research-page" id="contenido">
       <section className="inner-hero research-page-hero">
         <div className="inner-hero-meta">
-          <span>VOCES JÓVENES CONTRA LA GUERRA</span>
+          <span>LA ANTORCHA CONTRA LA GUERRA</span>
           <span>ARCHIVO / 01</span>
         </div>
         <p className="eyebrow">INVESTIGACIÓN ABIERTA</p>

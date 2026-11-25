@@ -18,7 +18,7 @@ const DATE_MENTION_PATTERNS = [
   /\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+(?:19|20)\d{2}\b/gi,
 ];
 
-function invalid(message: string, code: "INVALID_REPORT" | "INVALID_REFERENCE" | "UNSUPPORTED_DATE" | "UNSUPPORTED_FIGURE" = "INVALID_REPORT"): never {
+function invalid(message: string, code: "INVALID_REPORT" | "INVALID_REFERENCE" | "UNSUPPORTED_DATE" | "UNSUPPORTED_FIGURE" | "INCOMPLETE_REPORT" = "INVALID_REPORT"): never {
   throw new ResearchServiceError(code, message);
 }
 
@@ -141,7 +141,11 @@ function parseClaims(
   value: unknown,
   path: string,
   documentsById: Map<string, ResearchDocument>,
-  options: { minimum?: number; requireNumeric?: boolean } = {},
+  options: {
+    minimum?: number;
+    requireNumeric?: boolean;
+    omitUnsupportedEvidence?: boolean;
+  } = {},
 ): ResearchClaim[] {
   if (
     !Array.isArray(value) ||
@@ -151,49 +155,112 @@ function parseClaims(
   }
 
   const claims: ResearchClaim[] = [];
+  let omittedClaims = 0;
 
   value.forEach((claim, index) => {
-    claims.push(
-      parseClaim(
+    try {
+      claims.push(parseClaim(
         claim,
         `${path}[${index}]`,
         documentsById,
         options,
-      ),
-    );
+      ));
+    } catch (error) {
+      if (
+        options.omitUnsupportedEvidence
+        && error instanceof ResearchServiceError
+        && ["UNSUPPORTED_DATE", "UNSUPPORTED_FIGURE"].includes(error.code)
+      ) {
+        omittedClaims += 1;
+        return;
+      }
+      throw error;
+    }
   });
 
+  if (omittedClaims > 0) {
+    console.warn("[research] Omitted claims with unsupported dates or figures", {
+      section: path,
+      count: omittedClaims,
+    });
+  }
+
   if (claims.length < (options.minimum ?? 0)) {
-    invalid(`No hay suficientes afirmaciones válidas en ${path}.`);
+    const firstSourceId = documentsById.keys().next().value;
+    if (options.omitUnsupportedEvidence && options.minimum && firstSourceId) {
+      return [{
+        text: "Los documentos recuperados no contienen información verificable suficiente para desarrollar esta sección.",
+        sourceIds: [firstSourceId],
+      }];
+    }
+    invalid(`No hay suficientes afirmaciones verificables en ${path}.`, "INCOMPLETE_REPORT");
   }
 
   return claims;
 }
 
-function parseRecentEvents(value: unknown, documentsById: Map<string, ResearchDocument>): ResearchReportDraft["recentEvents"] {
+function parseRecentEvents(
+  value: unknown,
+  documentsById: Map<string, ResearchDocument>,
+  omitUnsupportedEvidence = false,
+): ResearchReportDraft["recentEvents"] {
   if (!Array.isArray(value) || value.length > MAX_CLAIMS_PER_SECTION) invalid("Cronología inválida.");
+  if (value.length === 0) {
+    invalid("La cronología debe explicar qué acontecimientos o límites se pudieron verificar.", "INCOMPLETE_REPORT");
+  }
 
-  return value.map((event, index) => {
+  let omittedEvents = 0;
+  const events = value.flatMap((event, index) => {
     if (!isObject(event)) invalid(`Acontecimiento inválido en recentEvents[${index}].`);
     assertKeys(event, ["date", "text", "sourceIds"], `recentEvents[${index}]`);
     if (event.date !== null && typeof event.date !== "string") invalid("La fecha del acontecimiento debe ser texto o null.");
 
-    const claim = parseClaim(
-      { text: event.text, sourceIds: event.sourceIds },
-      `recentEvents[${index}]`,
-      documentsById,
-    );
-    const date = typeof event.date === "string" ? event.date.trim() : null;
+    try {
+      const claim = parseClaim(
+        { text: event.text, sourceIds: event.sourceIds },
+        `recentEvents[${index}]`,
+        documentsById,
+      );
+      const date = typeof event.date === "string" ? event.date.trim() : null;
 
-    if (date) {
-      if (!evidenceContains(claim.sourceIds, documentsById, date)) {
-        invalid("La fecha del acontecimiento no aparece en sus fuentes.", "UNSUPPORTED_DATE");
+      if (date) {
+        if (!evidenceContains(claim.sourceIds, documentsById, date)) {
+          invalid("La fecha del acontecimiento no aparece en sus fuentes.", "UNSUPPORTED_DATE");
+        }
+        assertNoUnsupportedDates(date, claim.sourceIds, documentsById);
       }
-      assertNoUnsupportedDates(date, claim.sourceIds, documentsById);
-    }
 
-    return { date, ...claim };
+      return [{ date, ...claim }];
+    } catch (error) {
+      if (
+        omitUnsupportedEvidence
+        && error instanceof ResearchServiceError
+        && ["UNSUPPORTED_DATE", "UNSUPPORTED_FIGURE"].includes(error.code)
+      ) {
+        omittedEvents += 1;
+        return [];
+      }
+      throw error;
+    }
   });
+
+  if (omittedEvents > 0) {
+    console.warn("[research] Omitted events with unsupported dates or figures", {
+      count: omittedEvents,
+    });
+  }
+  if (events.length === 0) {
+    const firstSourceId = documentsById.keys().next().value;
+    if (omitUnsupportedEvidence && firstSourceId) {
+      return [{
+        date: null,
+        text: "Los extractos recuperados no permiten establecer una cronología reciente con fechas verificables.",
+        sourceIds: [firstSourceId],
+      }];
+    }
+    invalid("No hay acontecimientos con fechas verificables en las fuentes.", "INCOMPLETE_REPORT");
+  }
+  return events;
 }
 
 function citationFromDocument(document: ResearchDocument): ResearchCitation {
@@ -218,7 +285,11 @@ function citationFromDocument(document: ResearchDocument): ResearchCitation {
   };
 }
 
-export function validateResearchReport(value: unknown, documents: ResearchDocument[]): ResearchReport {
+export function validateResearchReport(
+  value: unknown,
+  documents: ResearchDocument[],
+  options: { omitUnsupportedEvidence?: boolean } = {},
+): ResearchReport {
   if (!isObject(value)) invalid("La respuesta del analizador no es un informe válido.");
   assertKeys(
     value,
@@ -245,9 +316,15 @@ export function validateResearchReport(value: unknown, documents: ResearchDocume
   const documentsById = new Map(documents.map((document) => [document.id, document]));
   const draft: ResearchReportDraft = {
     title,
-    summary: parseClaims(value.summary, "summary", documentsById, { minimum: 1 }),
-    historicalContext: parseClaims(value.historicalContext, "historicalContext", documentsById),
-    recentEvents: parseRecentEvents(value.recentEvents, documentsById),
+    summary: parseClaims(value.summary, "summary", documentsById, {
+      minimum: 1,
+      omitUnsupportedEvidence: options.omitUnsupportedEvidence,
+    }),
+    historicalContext: parseClaims(value.historicalContext, "historicalContext", documentsById, {
+      minimum: 1,
+      omitUnsupportedEvidence: options.omitUnsupportedEvidence,
+    }),
+    recentEvents: parseRecentEvents(value.recentEvents, documentsById, options.omitUnsupportedEvidence),
     figures: parseClaims(
   Array.isArray(value.figures)
     ? value.figures.filter(
@@ -259,13 +336,13 @@ export function validateResearchReport(value: unknown, documents: ResearchDocume
     : value.figures,
   "figures",
   documentsById,
-  { requireNumeric: true },
+  { requireNumeric: true, omitUnsupportedEvidence: options.omitUnsupportedEvidence },
 ),
-    humanitarianImpact: parseClaims(value.humanitarianImpact, "humanitarianImpact", documentsById),
-    childAndAdolescentImpact: parseClaims(value.childAndAdolescentImpact, "childAndAdolescentImpact", documentsById),
-    internationalResponse: parseClaims(value.internationalResponse, "internationalResponse", documentsById),
-    uncertainties: parseClaims(value.uncertainties, "uncertainties", documentsById),
-    documentaryConclusions: parseClaims(value.documentaryConclusions, "documentaryConclusions", documentsById),
+    humanitarianImpact: parseClaims(value.humanitarianImpact, "humanitarianImpact", documentsById, { minimum: 1, omitUnsupportedEvidence: options.omitUnsupportedEvidence }),
+    childAndAdolescentImpact: parseClaims(value.childAndAdolescentImpact, "childAndAdolescentImpact", documentsById, { minimum: 1, omitUnsupportedEvidence: options.omitUnsupportedEvidence }),
+    internationalResponse: parseClaims(value.internationalResponse, "internationalResponse", documentsById, { minimum: 1, omitUnsupportedEvidence: options.omitUnsupportedEvidence }),
+    uncertainties: parseClaims(value.uncertainties, "uncertainties", documentsById, { minimum: 1, omitUnsupportedEvidence: options.omitUnsupportedEvidence }),
+    documentaryConclusions: parseClaims(value.documentaryConclusions, "documentaryConclusions", documentsById, { minimum: 1, omitUnsupportedEvidence: options.omitUnsupportedEvidence }),
   };
 
   const referencedIds = new Set<string>();
